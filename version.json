@@ -1,5 +1,8 @@
 
 {
   "version": "0.4-dev16",
-  "release_url": "https://github.com/DiversSi/DiversSI-Tx-Analyzer/releases"
+  "release_url": "https://github.com/DiversSi/DiversSI-Tx-Analyzer/releases/tag/v0.4-dev16",
+  "firmware_url": "https://github.com/DiversSi/DiversSI-Tx-Analyzer/releases/download/v0.4-dev16/DiversSI_Tx_Analyzer.ino.bin",
+  "sha256": "cc44a6a2d47b98b81d0adf37d4090e65fdb5485e805c3dcba50404d9333b97cf"
 }
+
