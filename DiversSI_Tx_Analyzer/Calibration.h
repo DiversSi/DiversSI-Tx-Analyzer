@@ -15,6 +15,18 @@
 #define HE_DEFAULT_U0_MV        0.0f
 #define HE_DEFAULT_U100_MV    749.94f
 
+// Calibration point types are declared in a header so the Arduino IDE
+// sketch preprocessor can generate function prototypes that use them.
+enum OxygenCalibrationPoint {
+  O2_CAL_POINT_AIR,
+  O2_CAL_POINT_PURE
+};
+
+enum HeliumCalibrationPoint {
+  HE_CAL_POINT_ZERO,
+  HE_CAL_POINT_PURE
+};
+
 struct CalibrationData {
   float o2AirVoltage_mV;
   float o2PureVoltage_mV;

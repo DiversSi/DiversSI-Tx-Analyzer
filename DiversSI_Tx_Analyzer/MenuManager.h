@@ -10,6 +10,10 @@ enum AppScreen {
   SCREEN_CALIBRATION_MENU,
   SCREEN_SETTINGS_MENU,
   SCREEN_DISPLAY_SETTINGS,
+  SCREEN_SYSTEM_SETTINGS,
+  SCREEN_WIFI_NETWORKS,
+  SCREEN_WIFI_PASSWORD,
+  SCREEN_FIRMWARE_UPDATE,
   SCREEN_SENSOR_STATUS,
   SCREEN_ABOUT
 };
@@ -21,6 +25,7 @@ private:
   uint8_t previousSelectedItem = 0;
   bool screenChanged = true;
   bool selectionChanged = false;
+  uint8_t wifiNetworkCount = 1;
 
   void changeScreen(AppScreen newScreen) {
     currentScreen = newScreen;
@@ -56,6 +61,15 @@ public:
     if (event.type == BTN_EVENT_LONG && event.button == BTN_ENTER) {
       if (currentScreen == SCREEN_MAIN_MENU) {
         changeScreen(SCREEN_MAIN);
+      } else if (currentScreen == SCREEN_WIFI_NETWORKS || currentScreen == SCREEN_WIFI_PASSWORD) {
+        changeScreen(SCREEN_SYSTEM_SETTINGS);
+      } else if (currentScreen == SCREEN_DISPLAY_SETTINGS ||
+                 currentScreen == SCREEN_SYSTEM_SETTINGS) {
+        // Display and System Settings are child screens of the Settings menu.
+        changeScreen(SCREEN_SETTINGS_MENU);
+      } else if (currentScreen == SCREEN_SETTINGS_MENU) {
+        // Settings menu is a child of the Main Menu.
+        changeScreen(SCREEN_MAIN_MENU);
       } else if (currentScreen != SCREEN_MAIN) {
         returnToMainMenu();
       }
@@ -85,8 +99,16 @@ public:
         itemCount = 2;
         break;
       case SCREEN_DISPLAY_SETTINGS:
-        itemCount = 3;
+        itemCount = 6;
         break;
+      case SCREEN_SYSTEM_SETTINGS:
+        itemCount = 2;
+        break;
+      case SCREEN_WIFI_NETWORKS:
+        itemCount = wifiNetworkCount;
+        break;
+      case SCREEN_WIFI_PASSWORD:
+        return;
       default:
         return;
     }
@@ -116,6 +138,31 @@ public:
       }
     } else if (event.button == BTN_ENTER && currentScreen == SCREEN_SETTINGS_MENU) {
       if (selectedItem == 0) changeScreen(SCREEN_DISPLAY_SETTINGS);
+      else if (selectedItem == 1) changeScreen(SCREEN_SYSTEM_SETTINGS);
+    } else if (event.button == BTN_ENTER && currentScreen == SCREEN_SYSTEM_SETTINGS) {
+      if (selectedItem == 1) changeScreen(SCREEN_FIRMWARE_UPDATE);
+    } else if (event.button == BTN_ENTER && currentScreen == SCREEN_WIFI_NETWORKS) {
+      // Network selection and password entry are implemented in the next stage.
+    }
+  }
+
+  void openWifiNetworks() { changeScreen(SCREEN_WIFI_NETWORKS); }
+  void returnToSystemSettings() { changeScreen(SCREEN_SYSTEM_SETTINGS); }
+
+  void openWifiPassword() {
+    changeScreen(SCREEN_WIFI_PASSWORD);
+  }
+
+  void backToWifiNetworks() {
+    changeScreen(SCREEN_WIFI_NETWORKS);
+  }
+
+  void setWifiNetworkCount(uint8_t count) {
+    wifiNetworkCount = count ? count : 1;
+    if (currentScreen == SCREEN_WIFI_NETWORKS && selectedItem >= wifiNetworkCount) {
+      selectedItem = wifiNetworkCount - 1;
+      previousSelectedItem = selectedItem;
+      selectionChanged = false;
     }
   }
 

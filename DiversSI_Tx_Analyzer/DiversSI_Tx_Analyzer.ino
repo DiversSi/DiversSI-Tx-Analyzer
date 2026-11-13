@@ -9,6 +9,35 @@
 #include "Calibration.h"
 #include "Storage.h"
 #include "MenuManager.h"
+#include "WifiManager.h"
+#include "FirmwareUpdateManager.h"
+
+// On-screen Wi-Fi keyboard: 36 character keys plus five action keys.
+const char WIFI_SYMBOL_KEYS[] = "!@#$%^&*()-_=+[]{};:,.?/\\|<>~`\"'";
+String wifiPasswordInput;
+uint8_t wifiPasswordCharIndex = 0;
+bool wifiKeyboardSymbols = false;
+bool wifiKeyboardUppercase = false;
+static const uint8_t WIFI_KEY_COUNT = 37;
+
+String getWifiKeyboardKey(uint8_t index) {
+  if (index >= 32) {
+    const char* labels[] = {"SHFT", "SYM", "SPACE", "DEL", "DONE"};
+    return labels[index - 32];
+  }
+  if (wifiKeyboardSymbols) return String(WIFI_SYMBOL_KEYS[index]);
+  if (index < 26) {
+    char c = wifiKeyboardUppercase ? char('A' + index) : char('a' + index);
+    return String(c);
+  }
+  return String(char('0' + index - 26));
+}
+
+String getMaskedWifiPassword() {
+  String masked;
+  for (size_t i = 0; i < wifiPasswordInput.length(); ++i) masked += '*';
+  return masked;
+}
 
 // Hardware modules
 ADSManager adc;
@@ -21,12 +50,62 @@ ValueFilter oxygenFilter(0.25f);
 ValueFilter heliumFilter(0.25f);
 Storage storage;
 MenuManager menu;
+WifiManager wifiManager;
+FirmwareUpdateManager firmwareUpdate;
 Storage::DisplaySettings displaySettings;
 uint32_t lastDisplayActivity_ms = 0;
 bool displayDimmed = false;
 bool wakePressPending = false;
 ButtonID wakeButton = BTN_UP;
 const uint32_t DIM_TIMEOUTS_MS[] = {30000UL, 60000UL, 120000UL, 300000UL};
+
+// IP5306 read-only status monitoring (I2C address 0x75).
+static const uint8_t IP5306_ADDRESS = 0x75;
+static const uint32_t BATTERY_UPDATE_INTERVAL_MS = 1000;
+uint32_t lastBatteryUpdate_ms = 0;
+int batteryPercent = -1;
+bool batteryCharging = false;
+bool batteryFull = false;
+bool batteryAvailable = false;
+
+bool readIP5306Register(uint8_t reg, uint8_t &value) {
+  Wire.beginTransmission(IP5306_ADDRESS);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint8_t)IP5306_ADDRESS, (uint8_t)1) != 1) return false;
+  value = Wire.read();
+  return true;
+}
+
+void updateBatteryStatus(bool force = false) {
+  const uint32_t now = millis();
+  if (!force && (uint32_t)(now - lastBatteryUpdate_ms) < BATTERY_UPDATE_INTERVAL_MS) return;
+  lastBatteryUpdate_ms = now;
+
+  uint8_t gauge = 0, charge = 0, full = 0;
+  bool gaugeOk = readIP5306Register(0x78, gauge);
+  bool chargeOk = readIP5306Register(0x70, charge);
+  bool fullOk = readIP5306Register(0x71, full);
+  batteryAvailable = gaugeOk;
+  batteryPercent = -1;
+
+  if (gaugeOk) {
+    switch ((gauge >> 4) & 0x0F) {
+      case 0x0: batteryPercent = 0; break;
+      case 0x1: batteryPercent = 25; break;
+      case 0x3: batteryPercent = 50; break;
+      case 0x7: batteryPercent = 75; break;
+      case 0xF: batteryPercent = 100; break;
+      default: batteryPercent = -1; break;
+    }
+  }
+  batteryCharging = chargeOk && (charge & 0x08);
+  batteryFull = fullOk && (full & 0x08);
+
+  if (menu.getScreen() == SCREEN_MAIN) {
+    display.updateBatteryIndicator(batteryPercent, batteryCharging, batteryFull);
+  }
+}
 
 
 // Non-blocking two-point O2 calibration state (AIR and PURE).
@@ -38,22 +117,12 @@ enum OxygenCalibrationState {
   O2_CAL_BLOCKED
 };
 
-enum OxygenCalibrationPoint {
-  O2_CAL_POINT_AIR,
-  O2_CAL_POINT_PURE
-};
-
 enum HeliumCalibrationState {
   HE_CAL_IDLE,
   HE_CAL_CAPTURING,
   HE_CAL_FAILED,
   HE_CAL_SUCCEEDED,
   HE_CAL_BLOCKED
-};
-
-enum HeliumCalibrationPoint {
-  HE_CAL_POINT_ZERO,
-  HE_CAL_POINT_PURE
 };
 
 static const uint8_t O2_CAL_SAMPLE_COUNT = 10;
@@ -434,14 +503,20 @@ void setup() {
     displaySettings.brightness = 100;
     displaySettings.theme = 0;
     displaySettings.dimTimeout = 1;
+    Storage::setDefaultPalette(displaySettings);
   }
   display.begin();
-  display.setTheme(displaySettings.theme == 1);
+  display.setTheme(displaySettings.theme == 1,
+                   displaySettings.theme ? displaySettings.lightAccent : displaySettings.darkAccent,
+                   displaySettings.theme ? displaySettings.lightBackground : displaySettings.darkBackground,
+                   displaySettings.theme ? displaySettings.lightText : displaySettings.darkText);
   display.setBrightness(displaySettings.brightness);
   lastDisplayActivity_ms = millis();
 
+  wifiManager.begin();
   menu.begin();
   display.drawMainScreen(adcReady);
+  updateBatteryStatus(true);
   menu.clearScreenChanged();
   Serial.println("Display: OK");
 
@@ -451,12 +526,142 @@ void setup() {
 
 void loop() {
 
+  // Read IP5306 status periodically; all accesses are read-only.
+  updateBatteryStatus();
+
+  // Wi-Fi scanning and connection run asynchronously so sensor updates continue.
+  WifiManager::ScanState previousWifiState = wifiManager.getState();
+  wifiManager.update();
+  if (previousWifiState != wifiManager.getState()) {
+    Serial.printf("[WiFi-DIAG][APP] scan state transition %d -> %d at t=%lu ms; screen=%d\n",
+                  (int)previousWifiState, (int)wifiManager.getState(),
+                  (unsigned long)millis(), (int)menu.getScreen());
+  }
+  if (previousWifiState == WifiManager::WIFI_SCANNING &&
+      wifiManager.getState() != WifiManager::WIFI_SCANNING) {
+    bool autoStarted = false;
+    if (wifiManager.getState() == WifiManager::WIFI_READY) {
+      Serial.println("[WiFi-DIAG][APP] scan ready; checking saved network");
+      autoStarted = wifiManager.connectSavedIfFound();
+    } else {
+      Serial.printf("[WiFi-DIAG][APP] scan ended in state=%d; no auto-connect\n",
+                    (int)wifiManager.getState());
+    }
+    Serial.printf("[WiFi-DIAG][APP] autoStarted=%s; network count=%u\n",
+                  autoStarted ? "true" : "false", wifiManager.getCount());
+    // If no saved network is visible (or scanning failed), let the user
+    // choose from the discovered networks instead of leaving Wi-Fi stuck ON.
+    if (!autoStarted && menu.getScreen() == SCREEN_SYSTEM_SETTINGS && wifiManager.isEnabled()) {
+      menu.openWifiNetworks();
+    }
+  }
+  static bool lastWifiConnectedForMenu = false;
+  static bool lastWifiEnabledForMenu = false;
+  static bool lastWifiBusyForMenu = false;
+  if (menu.getScreen() == SCREEN_SYSTEM_SETTINGS &&
+      (lastWifiConnectedForMenu != wifiManager.isConnected() ||
+       lastWifiEnabledForMenu != wifiManager.isEnabled() ||
+       lastWifiBusyForMenu != wifiManager.isBusy())) {
+    display.updateSystemSettingsWifiStatus(menu.getSelectedItem(), wifiManager.isEnabled(),
+                                           wifiManager.isConnected(), wifiManager.isBusy());
+  }
+  lastWifiConnectedForMenu = wifiManager.isConnected();
+  lastWifiEnabledForMenu = wifiManager.isEnabled();
+  lastWifiBusyForMenu = wifiManager.isBusy();
+
+  // A failed automatic connection returns the user to the available network list.
+  static WifiManager::ConnectState previousWifiConnectState = WifiManager::CONNECT_IDLE;
+  WifiManager::ConnectState currentWifiConnectState = wifiManager.getConnectState();
+  if (previousWifiConnectState == WifiManager::CONNECTING &&
+      currentWifiConnectState == WifiManager::CONNECT_FAILED &&
+      menu.getScreen() == SCREEN_SYSTEM_SETTINGS && wifiManager.isEnabled()) {
+    menu.openWifiNetworks();
+  }
+  if (previousWifiConnectState == WifiManager::CONNECTING &&
+      currentWifiConnectState == WifiManager::CONNECTED &&
+      menu.getScreen() == SCREEN_WIFI_PASSWORD) {
+    Serial.println("[WiFi][APP] connection successful; returning to System Settings");
+    menu.returnToSystemSettings();
+  }
+  previousWifiConnectState = currentWifiConnectState;
+
+  if (menu.getScreen() == SCREEN_WIFI_NETWORKS) {
+    if (previousWifiState == WifiManager::WIFI_SCANNING &&
+        wifiManager.getState() != WifiManager::WIFI_SCANNING) {
+      menu.setWifiNetworkCount(wifiManager.getCount());
+      // Draw network rows only after passing valid arrays. Passing nullptr here
+      // crashes when at least one network is found.
+      String names[WifiManager::MAX_NETWORKS];
+      int32_t signals[WifiManager::MAX_NETWORKS];
+      for (uint8_t i = 0; i < wifiManager.getCount(); ++i) {
+        names[i] = wifiManager.getSSID(i);
+        signals[i] = wifiManager.getRSSI(i);
+      }
+      display.drawWifiNetworks(menu.getSelectedItem(), wifiManager.getCount(), false,
+        wifiManager.getState() == WifiManager::WIFI_FAILED, names, signals);
+    }
+  }
+
   // Process buttons on every loop pass.
   buttons.update();
 
   while (buttons.available()) {
 
     ButtonEvent event = buttons.read();
+
+    // Dedicated three-button Wi-Fi password entry.
+    if (menu.getScreen() == SCREEN_WIFI_PASSWORD) {
+      if (event.button == BTN_ENTER && event.type == BTN_EVENT_LONG) {
+        wifiManager.cancelConnection();
+        wifiPasswordInput = "";
+        menu.returnToSystemSettings();
+        continue;
+      }
+      if (event.type == BTN_EVENT_SHORT) {
+        if (wifiManager.getConnectState() == WifiManager::CONNECTING) continue;
+        if (wifiManager.getConnectState() == WifiManager::CONNECTED) {
+          menu.backToWifiNetworks();
+          continue;
+        }
+        if (wifiManager.getConnectState() == WifiManager::CONNECT_FAILED) {
+          if (event.button == BTN_ENTER) {
+            wifiManager.connectSelected(wifiPasswordInput);
+            continue;
+          }
+          wifiManager.clearConnectResult();
+        }
+        if (event.button == BTN_UP) {
+          wifiPasswordCharIndex = (wifiPasswordCharIndex + 1) % WIFI_KEY_COUNT;
+        } else if (event.button == BTN_DOWN) {
+          wifiPasswordCharIndex = (wifiPasswordCharIndex == 0) ? WIFI_KEY_COUNT - 1 : wifiPasswordCharIndex - 1;
+        } else if (event.button == BTN_ENTER) {
+          if (wifiPasswordCharIndex < 32) {
+            if (wifiPasswordInput.length() < 63) {
+              wifiPasswordInput += getWifiKeyboardKey(wifiPasswordCharIndex);
+            }
+          } else if (wifiPasswordCharIndex == 32) {
+            wifiKeyboardUppercase = !wifiKeyboardUppercase;
+          } else if (wifiPasswordCharIndex == 33) {
+            wifiKeyboardSymbols = !wifiKeyboardSymbols;
+          } else if (wifiPasswordCharIndex == 34) {
+            if (wifiPasswordInput.length() < 63) wifiPasswordInput += ' ';
+          } else if (wifiPasswordCharIndex == 35) {
+            if (wifiPasswordInput.length()) wifiPasswordInput.remove(wifiPasswordInput.length() - 1);
+          } else if (wifiPasswordCharIndex == 36) {
+            if (wifiPasswordInput.length() >= 8 && wifiPasswordInput.length() <= 63) {
+              wifiManager.connectSelected(wifiPasswordInput);
+            }
+          }
+        }
+        String masked = getMaskedWifiPassword();
+        display.drawWifiPassword(wifiManager.getSelectedSSID(), masked,
+          wifiPasswordCharIndex, wifiKeyboardSymbols, wifiKeyboardUppercase,
+          wifiManager.getConnectState() == WifiManager::CONNECTING,
+          wifiManager.getConnectState() == WifiManager::CONNECTED,
+          wifiManager.getConnectState() == WifiManager::CONNECT_FAILED);
+      }
+      continue;
+    }
 
     // A press on the dimmed main measurement screen wakes the display only.
     if (menu.getScreen() == SCREEN_MAIN && displayDimmed &&
@@ -518,16 +723,95 @@ void loop() {
     }
 
     AppScreen screenBeforeEvent = menu.getScreen();
+    if (screenBeforeEvent == SCREEN_WIFI_NETWORKS &&
+        event.type == BTN_EVENT_SHORT && event.button == BTN_ENTER) {
+      if (wifiManager.getState() == WifiManager::WIFI_FAILED || wifiManager.getCount() == 0) {
+        Serial.printf("[WiFi-DIAG][UI] ENTER retry scan; state=%d count=%u at t=%lu ms\n",
+                      (int)wifiManager.getState(), wifiManager.getCount(), (unsigned long)millis());
+        wifiManager.beginScan();
+        display.drawWifiNetworks(0, 0, true, false, nullptr, nullptr);
+      } else {
+        uint8_t chosen = menu.getSelectedItem();
+        wifiPasswordInput = "";
+        wifiPasswordCharIndex = 0;
+        wifiKeyboardSymbols = false;
+        wifiKeyboardUppercase = false;
+        if (wifiManager.isEncrypted(chosen)) {
+          wifiManager.selectNetwork(chosen);
+          menu.openWifiPassword();
+        } else {
+          wifiManager.selectNetwork(chosen);
+          wifiManager.connectTo(chosen, "");
+          menu.openWifiPassword();
+        }
+      }
+      continue;
+    }
+
+    if (screenBeforeEvent == SCREEN_SYSTEM_SETTINGS &&
+        event.type == BTN_EVENT_SHORT && event.button == BTN_ENTER &&
+        menu.getSelectedItem() == 0) {
+      if (wifiManager.isEnabled()) {
+        wifiManager.setEnabled(false);
+      } else {
+        wifiManager.setEnabled(true);
+      }
+      display.updateSystemSettingsWifiStatus(menu.getSelectedItem(), wifiManager.isEnabled(), wifiManager.isConnected(), wifiManager.isBusy());
+      continue;
+    }
+
+    if (screenBeforeEvent == SCREEN_FIRMWARE_UPDATE &&
+        event.type == BTN_EVENT_SHORT && event.button == BTN_ENTER) {
+      if (firmwareUpdate.isReadyToInstall()) {
+        display.drawFirmwareUpdateInfo(
+          firmwareUpdate.hasChecked(), firmwareUpdate.isSuccessful(),
+          firmwareUpdate.getLatestVersion(), "Downloading and verifying firmware");
+        firmwareUpdate.installUpdate(wifiManager.isConnected());
+      } else {
+        firmwareUpdate.checkLatest(wifiManager.isConnected());
+      }
+      display.drawFirmwareUpdateInfo(
+        firmwareUpdate.hasChecked(), firmwareUpdate.isSuccessful(),
+        firmwareUpdate.getLatestVersion(), firmwareUpdate.getStatusMessage());
+      continue;
+    }
+
     if (screenBeforeEvent == SCREEN_DISPLAY_SETTINGS &&
         event.type == BTN_EVENT_SHORT && event.button == BTN_ENTER) {
       uint8_t selected = menu.getSelectedItem();
-      if (selected == 0) displaySettings.brightness = (displaySettings.brightness >= 100) ? 10 : displaySettings.brightness + 10;
-      else if (selected == 1) displaySettings.theme = displaySettings.theme ? 0 : 1;
-      else displaySettings.dimTimeout = (displaySettings.dimTimeout + 1) % 4;
-      display.setTheme(displaySettings.theme == 1);
+      if (selected == 0) {
+        displaySettings.brightness = (displaySettings.brightness >= 100) ? 10 : displaySettings.brightness + 10;
+      } else if (selected == 1) {
+        displaySettings.theme = displaySettings.theme ? 0 : 1;
+      } else if (selected == 2) {
+        displaySettings.dimTimeout = (displaySettings.dimTimeout + 1) % 4;
+      } else if (displaySettings.theme == 0 && selected == 3) {
+        displaySettings.darkAccent = (displaySettings.darkAccent + 1) % 6;
+      } else if (displaySettings.theme == 0 && selected == 4) {
+        displaySettings.darkBackground = (displaySettings.darkBackground + 1) % 5;
+      } else if (displaySettings.theme == 0 && selected == 5) {
+        displaySettings.darkText = (displaySettings.darkText + 1) % 3;
+      } else if (displaySettings.theme == 1 && selected == 3) {
+        displaySettings.lightAccent = (displaySettings.lightAccent + 1) % 6;
+      } else if (displaySettings.theme == 1 && selected == 4) {
+        displaySettings.lightBackground = (displaySettings.lightBackground + 1) % 5;
+      } else if (displaySettings.theme == 1 && selected == 5) {
+        displaySettings.lightText = (displaySettings.lightText + 1) % 3;
+      }
+      uint8_t activeAccent = displaySettings.theme ? displaySettings.lightAccent : displaySettings.darkAccent;
+      uint8_t activeBackground = displaySettings.theme ? displaySettings.lightBackground : displaySettings.darkBackground;
+      uint8_t activeText = displaySettings.theme ? displaySettings.lightText : displaySettings.darkText;
+      display.setTheme(displaySettings.theme == 1, activeAccent, activeBackground, activeText);
       display.setBrightness(displaySettings.brightness);
       storage.saveDisplaySettings(displaySettings);
-      display.drawDisplaySettings(selected, displaySettings.brightness, displaySettings.theme, displaySettings.dimTimeout);
+      if (selected == 0 || selected == 2) {
+        display.updateDisplaySettingsValue(selected, displaySettings.brightness, displaySettings.theme,
+          displaySettings.dimTimeout, activeAccent, activeBackground, activeText);
+      } else {
+        // Theme and palette changes affect the whole display-settings palette.
+        display.drawDisplaySettings(selected, displaySettings.brightness, displaySettings.theme,
+          displaySettings.dimTimeout, activeAccent, activeBackground, activeText);
+      }
       continue;
     }
     menu.handleEvent(event);
@@ -585,6 +869,21 @@ void loop() {
     }
   }
 
+  // Refresh the Wi-Fi password screen when asynchronous connection state changes.
+  if (menu.getScreen() == SCREEN_WIFI_PASSWORD) {
+    static WifiManager::ConnectState lastWifiConnectState = WifiManager::CONNECT_IDLE;
+    WifiManager::ConnectState currentWifiConnectState = wifiManager.getConnectState();
+    if (currentWifiConnectState != lastWifiConnectState) {
+      lastWifiConnectState = currentWifiConnectState;
+      String masked = getMaskedWifiPassword();
+      display.drawWifiPassword(wifiManager.getSelectedSSID(), masked,
+        wifiPasswordCharIndex, wifiKeyboardSymbols, wifiKeyboardUppercase,
+        currentWifiConnectState == WifiManager::CONNECTING,
+        currentWifiConnectState == WifiManager::CONNECTED,
+        currentWifiConnectState == WifiManager::CONNECT_FAILED);
+    }
+  }
+
   // Calibration sampling is checked on every pass; the function itself
   // takes a sample only when its 500 ms deadline has arrived.
   updateOxygenCalibration();
@@ -638,6 +937,7 @@ void loop() {
 
       case SCREEN_MAIN:
         display.drawMainScreen(adc.isReady());
+        updateBatteryStatus(true);
         break;
 
       case SCREEN_MAIN_MENU:
@@ -654,7 +954,38 @@ void loop() {
 
       case SCREEN_DISPLAY_SETTINGS:
         display.drawDisplaySettings(menu.getSelectedItem(), displaySettings.brightness,
-                                    displaySettings.theme, displaySettings.dimTimeout);
+                                    displaySettings.theme, displaySettings.dimTimeout,
+                                    displaySettings.theme ? displaySettings.lightAccent : displaySettings.darkAccent,
+                                    displaySettings.theme ? displaySettings.lightBackground : displaySettings.darkBackground,
+                                    displaySettings.theme ? displaySettings.lightText : displaySettings.darkText);
+        break;
+
+      case SCREEN_SYSTEM_SETTINGS:
+        display.drawSystemSettingsMenu(menu.getSelectedItem(), wifiManager.isEnabled(), wifiManager.isConnected(), wifiManager.isBusy());
+        break;
+
+      case SCREEN_WIFI_NETWORKS:
+        // Keep existing scan results when they are already available.
+        if (wifiManager.getState() == WifiManager::WIFI_IDLE ||
+            wifiManager.getState() == WifiManager::WIFI_FAILED) {
+          wifiManager.beginScan();
+          display.drawWifiNetworks(0, 0, true, false, nullptr, nullptr);
+        }
+        break;
+
+      case SCREEN_WIFI_PASSWORD: {
+        String masked = getMaskedWifiPassword();
+        display.drawWifiPassword(wifiManager.getSelectedSSID(), masked,
+          wifiPasswordCharIndex, wifiKeyboardSymbols, wifiKeyboardUppercase,
+          wifiManager.getConnectState() == WifiManager::CONNECTING,
+          wifiManager.getConnectState() == WifiManager::CONNECTED,
+          wifiManager.getConnectState() == WifiManager::CONNECT_FAILED);
+        break;
+      }
+
+      case SCREEN_FIRMWARE_UPDATE:
+        firmwareUpdate.reset();
+        display.drawFirmwareUpdateInfo(false, false, "", "Press ENTER to check for updates");
         break;
 
       case SCREEN_SENSOR_STATUS:
@@ -703,8 +1034,28 @@ void loop() {
         break;
 
       case SCREEN_DISPLAY_SETTINGS:
-        display.drawDisplaySettings(newItem, displaySettings.brightness,
-                                    displaySettings.theme, displaySettings.dimTimeout);
+        display.updateDisplaySettingsSelection(oldItem, newItem, displaySettings.brightness,
+                                               displaySettings.theme, displaySettings.dimTimeout,
+                                               displaySettings.theme ? displaySettings.lightAccent : displaySettings.darkAccent,
+                                               displaySettings.theme ? displaySettings.lightBackground : displaySettings.darkBackground,
+                                               displaySettings.theme ? displaySettings.lightText : displaySettings.darkText);
+        break;
+
+      case SCREEN_SYSTEM_SETTINGS:
+        display.updateSystemSettingsSelection(oldItem, newItem, wifiManager.isEnabled(), wifiManager.isConnected(), wifiManager.isBusy());
+        break;
+
+      case SCREEN_WIFI_NETWORKS:
+        if (wifiManager.getState() == WifiManager::WIFI_READY) {
+          String names[WifiManager::MAX_NETWORKS];
+          int32_t signals[WifiManager::MAX_NETWORKS];
+          for (uint8_t i = 0; i < wifiManager.getCount(); ++i) {
+            names[i] = wifiManager.getSSID(i);
+            signals[i] = wifiManager.getRSSI(i);
+          }
+          display.updateWifiNetworksSelection(oldItem, newItem,
+            wifiManager.getCount(), names, signals);
+        }
         break;
 
       default:

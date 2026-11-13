@@ -22,7 +22,29 @@ public:
     uint8_t brightness = 100;
     uint8_t theme = 0;       // 0 = Dark, 1 = Light
     uint8_t dimTimeout = 1;  // 0=30s, 1=1min, 2=2min, 3=5min
+    // Independent palette selections for Dark and Light themes.
+    uint8_t darkAccent = 0, darkBackground = 0, darkText = 0;
+    uint8_t lightAccent = 0, lightBackground = 0, lightText = 0;
   };
+
+  struct LegacyDisplaySettings {
+    uint8_t brightness;
+    uint8_t theme;
+    uint8_t dimTimeout;
+  };
+
+  static bool validDisplaySettings(const DisplaySettings& s) {
+    return s.brightness >= 10 && s.brightness <= 100 && s.brightness % 10 == 0 &&
+           s.theme <= 1 && s.dimTimeout <= 3 &&
+           s.darkAccent <= 5 && s.lightAccent <= 5 &&
+           s.darkBackground <= 4 && s.lightBackground <= 4 &&
+           s.darkText <= 2 && s.lightText <= 2;
+  }
+
+  static void setDefaultPalette(DisplaySettings& s) {
+    s.darkAccent = 0; s.darkBackground = 0; s.darkText = 0;
+    s.lightAccent = 0; s.lightBackground = 0; s.lightText = 0;
+  }
 
 private:
 
@@ -60,21 +82,37 @@ private:
 public:
 
   bool saveDisplaySettings(const DisplaySettings& settings) {
-    if (!initialized || settings.brightness < 10 || settings.brightness > 100 ||
-        settings.brightness % 10 != 0 || settings.theme > 1 || settings.dimTimeout > 3)
-      return false;
+    if (!initialized || !validDisplaySettings(settings)) return false;
     return preferences.putBytes(KEY_DISPLAY, &settings, sizeof(settings)) == sizeof(settings);
   }
 
   bool loadDisplaySettings(DisplaySettings& settings) {
-    if (!initialized || preferences.getBytesLength(KEY_DISPLAY) != sizeof(DisplaySettings))
-      return false;
-    DisplaySettings loaded;
-    if (preferences.getBytes(KEY_DISPLAY, &loaded, sizeof(loaded)) != sizeof(loaded)) return false;
-    if (loaded.brightness < 10 || loaded.brightness > 100 || loaded.brightness % 10 != 0 ||
-        loaded.theme > 1 || loaded.dimTimeout > 3) return false;
-    settings = loaded;
-    return true;
+    if (!initialized) return false;
+
+    const size_t storedLength = preferences.getBytesLength(KEY_DISPLAY);
+    if (storedLength == sizeof(DisplaySettings)) {
+      DisplaySettings loaded;
+      if (preferences.getBytes(KEY_DISPLAY, &loaded, sizeof(loaded)) != sizeof(loaded) ||
+          !validDisplaySettings(loaded)) return false;
+      settings = loaded;
+      return true;
+    }
+
+    // Migrate the original v0.4 settings (brightness/theme/dim timeout).
+    if (storedLength == sizeof(LegacyDisplaySettings)) {
+      LegacyDisplaySettings oldSettings;
+      if (preferences.getBytes(KEY_DISPLAY, &oldSettings, sizeof(oldSettings)) != sizeof(oldSettings))
+        return false;
+      settings.brightness = oldSettings.brightness;
+      settings.theme = oldSettings.theme;
+      settings.dimTimeout = oldSettings.dimTimeout;
+      setDefaultPalette(settings);
+      if (!validDisplaySettings(settings)) return false;
+      saveDisplaySettings(settings);
+      return true;
+    }
+
+    return false;
   }
 
   bool begin() {
