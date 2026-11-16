@@ -10,7 +10,7 @@
 
 // Project information
 #define PROJECT_NAME "DiversSI Tx Analyzer"
-#define PROJECT_VERSION "0.5-dev2"
+#define PROJECT_VERSION "0.5-dev3"
 
 // Serial communication
 #define SERIAL_BAUDRATE 115200

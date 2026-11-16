@@ -66,7 +66,7 @@ uint32_t lastBatteryUpdate_ms = 0;
 int batteryPercent = -1;
 bool batteryCharging = false;
 bool batteryFull = false;
-bool batteryAvailable = false;
+bool usbConnected = false;
 
 bool readIP5306Register(uint8_t reg, uint8_t &value) {
   Wire.beginTransmission(IP5306_ADDRESS);
@@ -78,6 +78,7 @@ bool readIP5306Register(uint8_t reg, uint8_t &value) {
 }
 
 void updateBatteryStatus(bool force = false) {
+  //Serial.println("[BAT] updateBatteryStatus called");
   const uint32_t now = millis();
   if (!force && (uint32_t)(now - lastBatteryUpdate_ms) < BATTERY_UPDATE_INTERVAL_MS) return;
   lastBatteryUpdate_ms = now;
@@ -86,24 +87,25 @@ void updateBatteryStatus(bool force = false) {
   bool gaugeOk = readIP5306Register(0x78, gauge);
   bool chargeOk = readIP5306Register(0x70, charge);
   bool fullOk = readIP5306Register(0x71, full);
-  batteryAvailable = gaugeOk;
+  
   batteryPercent = -1;
-
   if (gaugeOk) {
-    switch ((gauge >> 4) & 0x0F) {
-      case 0x0: batteryPercent = 0; break;
-      case 0x1: batteryPercent = 25; break;
-      case 0x3: batteryPercent = 50; break;
-      case 0x7: batteryPercent = 75; break;
-      case 0xF: batteryPercent = 100; break;
-      default: batteryPercent = -1; break;
-    }
+      uint8_t leds = (~(gauge >> 4)) & 0x0F;
+      batteryPercent =
+          ((leds & 0x01) ? 25 : 0) +
+          ((leds & 0x02) ? 25 : 0) +
+          ((leds & 0x04) ? 25 : 0) +
+          ((leds & 0x08) ? 25 : 0);
   }
-  batteryCharging = chargeOk && (charge & 0x08);
+  
+  Serial.printf("IP5306: gaugeOk=%d gauge=0x%02X charge=0x%02X full=0x%02X batteryPercent=%d\n",
+              gaugeOk, gauge, charge, full, batteryPercent);
+  usbConnected = chargeOk && (charge & 0x08);  
   batteryFull = fullOk && (full & 0x08);
+  batteryCharging = usbConnected && fullOk && !batteryFull;
 
   if (menu.getScreen() == SCREEN_MAIN) {
-    display.updateBatteryIndicator(batteryPercent, batteryCharging, batteryFull);
+    display.updateBatteryIndicator(batteryPercent, usbConnected, batteryCharging, batteryFull);
   }
 }
 
@@ -618,6 +620,12 @@ void loop() {
         continue;
       }
       if (event.type == BTN_EVENT_SHORT) {
+        uint8_t oldPasswordKey = wifiPasswordCharIndex;
+        bool oldSymbolsPage = wifiKeyboardSymbols;
+        bool oldUppercase = wifiKeyboardUppercase;
+        bool passwordChanged = (event.button == BTN_ENTER) &&
+          (oldPasswordKey < 32 || oldPasswordKey == 34 || oldPasswordKey == 35);
+
         if (wifiManager.getConnectState() == WifiManager::CONNECTING) continue;
         if (wifiManager.getConnectState() == WifiManager::CONNECTED) {
           menu.backToWifiNetworks();
@@ -654,11 +662,22 @@ void loop() {
           }
         }
         String masked = getMaskedWifiPassword();
-        display.drawWifiPassword(wifiManager.getSelectedSSID(), masked,
-          wifiPasswordCharIndex, wifiKeyboardSymbols, wifiKeyboardUppercase,
-          wifiManager.getConnectState() == WifiManager::CONNECTING,
-          wifiManager.getConnectState() == WifiManager::CONNECTED,
-          wifiManager.getConnectState() == WifiManager::CONNECT_FAILED);
+        bool pageChanged = (oldSymbolsPage != wifiKeyboardSymbols) ||
+                           (oldUppercase != wifiKeyboardUppercase);
+        WifiManager::ConnectState passwordState = wifiManager.getConnectState();
+        if (passwordState == WifiManager::CONNECT_IDLE ||
+            passwordState == WifiManager::CONNECT_FAILED) {
+          display.updateWifiPasswordInput(masked, oldPasswordKey,
+            wifiPasswordCharIndex, wifiKeyboardSymbols, wifiKeyboardUppercase,
+            pageChanged, passwordChanged);
+        } else {
+          // Connection status changes are infrequent; redraw the status screen once.
+          display.drawWifiPassword(wifiManager.getSelectedSSID(), masked,
+            wifiPasswordCharIndex, wifiKeyboardSymbols, wifiKeyboardUppercase,
+            passwordState == WifiManager::CONNECTING,
+            passwordState == WifiManager::CONNECTED,
+            passwordState == WifiManager::CONNECT_FAILED);
+        }
       }
       continue;
     }

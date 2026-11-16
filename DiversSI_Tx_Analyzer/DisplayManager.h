@@ -41,7 +41,7 @@ class DisplayManager {
     void drawSensorPanels() {
 
       // O2 panel
-      tft.fillRoundRect(8, 52, 148, 125, COLOR_BG, 8);
+      tft.fillRoundRect(8, 52, 148, 125, 8, COLOR_BG);
       // 4-pixel O2 border (TFT_eSPI drawRoundRect has no thickness argument)
       tft.drawRoundRect(8, 52, 148, 125, 8, COLOR_ACCENT);
       tft.drawRoundRect(9, 53, 146, 123, 7, COLOR_ACCENT);
@@ -56,7 +56,7 @@ class DisplayManager {
       tft.drawString("--.- %", 82, 120, 4);
 
       // Helium panel
-      tft.fillRoundRect(164, 52, 148, 125, COLOR_BG, 8);
+      tft.fillRoundRect(164, 52, 148, 125, 8, COLOR_BG);
       // 4-pixel helium border
       tft.drawRoundRect(164, 52, 148, 125, 8, COLOR_ACCENT);
       tft.drawRoundRect(165, 53, 146, 123, 7, COLOR_ACCENT);
@@ -186,12 +186,16 @@ class DisplayManager {
 
     // Small IP5306 battery indicator in the upper-right corner.
     // percent is the PMIC's coarse 0/25/50/75/100% gauge; -1 means unavailable.
-    void updateBatteryIndicator(int percent, bool charging, bool full) {
+
+    void updateBatteryIndicator(int percent, bool usbConnected,
+                                bool charging, bool full) {
       if (!displayReady) return;
 
       const int x = 284, y = 11, w = 25, h = 13;
-      uint16_t outline = COLOR_HEADER_TEXT;
+
+      uint16_t outline = (usbConnected && full) ? TFT_GREEN : COLOR_HEADER_TEXT;
       uint16_t fill = COLOR_OK;
+
       tft.fillRect(270, 5, 49, 31, COLOR_HEADER);
       tft.drawRoundRect(x, y, w, h, 2, outline);
       tft.fillRect(x + w, y + 4, 3, 5, outline);
@@ -200,19 +204,28 @@ class DisplayManager {
         if (percent <= 25) fill = TFT_RED;
         else if (percent <= 50) fill = TFT_YELLOW;
         else fill = COLOR_OK;
+
         int innerWidth = (w - 4) * percent / 100;
-        if (innerWidth > 0) tft.fillRect(x + 2, y + 2, innerWidth, h - 4, fill);
+        if (innerWidth > 0) {
+          tft.fillRect(x + 2, y + 2, innerWidth, h - 4, fill);
+        }
       } else {
         tft.drawLine(x + 5, y + 6, x + 18, y + 6, outline);
       }
 
-      if (charging && !full) {
-        // Simple charging bolt, avoiding font-dependent Unicode symbols.
-        tft.drawLine(x + 13, y + 1, x + 9, y + 7, TFT_YELLOW);
-        tft.drawLine(x + 9, y + 7, x + 14, y + 7, TFT_YELLOW);
-        tft.drawLine(x + 14, y + 7, x + 11, y + 12, TFT_YELLOW);
+      if (usbConnected && charging) {
+        // Red charging bolt
+        tft.drawWideLine(x + 13, y + 1, x + 9, y + 7, 2, TFT_RED);
+        tft.drawWideLine(x + 9, y + 7, x + 14, y + 7, 2, TFT_RED);
+        tft.drawWideLine(x + 14, y + 7, x + 11, y + 12, 2, TFT_RED);
+      }
+      else if (usbConnected && full) {
+        // Green full-battery check mark
+        tft.drawWideLine(x + 8, y + 7, x + 11, y + 10, 2, TFT_BLACK);
+        tft.drawWideLine(x + 11, y + 10, x + 18, y + 3, 2, TFT_BLACK);
       }
     }
+
 
     void drawDisplaySettingsRow(uint8_t row, uint8_t selected, uint8_t brightness,
                                 uint8_t theme, uint8_t dimTimeout,
@@ -722,10 +735,10 @@ class DisplayManager {
       drawSystemSettingsRow(0, selectedItem, wifiEnabled, wifiConnected, wifiConnecting);
     }
 
-    // Draw one Wi-Fi network row. The SSID follows the selected text colors,
-    // while signal strength always keeps the normal text colors.
-    void drawWifiNetworkRow(uint8_t index, uint8_t row, uint8_t selectedItem,
-                            const String* names, const int32_t* signals) {
+    // Draw or erase the text in one Wi-Fi row without repainting the whole screen.
+    void drawWifiNetworkRowText(uint8_t index, uint8_t row, uint8_t selectedItem,
+                                const String* names, const int32_t* signals,
+                                bool eraseText = false) {
       int y = 53 + row * 38;
       uint16_t bg = (index == selectedItem) ? COLOR_ACCENT : COLOR_PANEL;
       uint16_t fg = (index == selectedItem) ? COLOR_HEADER_TEXT : COLOR_TEXT;
@@ -734,18 +747,35 @@ class DisplayManager {
       if (label.length() == 0) label = "Hidden network";
       if (label.length() > 14) label = label.substring(0, 13) + "~";
 
-      // Clear the SSID and signal text areas before repainting them.
-      // This removes trailing characters when the next network name is shorter.
-      tft.fillRect(10, y, 230, 32, bg);
-      tft.fillRect(245, y, 65, 32, COLOR_PANEL);
+      if (!eraseText) {
+        //tft.fillRect(10, y, 230, 32, bg);
+        //tft.fillRect(245, y, 65, 32, COLOR_PANEL);
+      }
 
       tft.setTextDatum(ML_DATUM);
-      tft.setTextColor(fg, bg);
-      tft.drawString(label, 18, y + 16, 4);
+      if (eraseText) {
+          // First pass: overwrite the old text with panel color.
+          tft.setTextColor(COLOR_TEXT, COLOR_PANEL);
+          tft.drawString(label, 18, y + 16, 4);
+
+          // Second pass: repaint the text background with panel color.
+          tft.setTextColor(COLOR_PANEL);
+          tft.drawString(label, 18, y + 16, 4);
+      } else {
+          tft.setTextColor(fg, bg);
+          tft.drawString(label, 18, y + 16, 4);
+      }
 
       tft.setTextDatum(MR_DATUM);
-      tft.setTextColor(COLOR_TEXT, COLOR_PANEL);
+      uint16_t signalColor = eraseText ? COLOR_BG : COLOR_TEXT;
+      uint16_t signalBg = eraseText ? COLOR_BG : COLOR_PANEL;
+      tft.setTextColor(signalColor, signalBg);
       tft.drawString(String(signals[index]) + " dBm", 300, y + 16, 2);
+    }
+
+    void drawWifiNetworkRow(uint8_t index, uint8_t row, uint8_t selectedItem,
+                            const String* names, const int32_t* signals) {
+      drawWifiNetworkRowText(index, row, selectedItem, names, signals, false);
     }
 
     // Update only the affected Wi-Fi rows when the selection moves.
@@ -760,6 +790,13 @@ class DisplayManager {
       uint8_t newFirst = newItem >= visible ? newItem - visible + 1 : 0;
 
       if (oldFirst != newFirst) {
+        // Erase all currently visible labels and signal values using screen colors.
+        for (uint8_t row = 0; row < visible; ++row) {
+          uint8_t index = oldFirst + row;
+          if (index >= count) break;
+          drawWifiNetworkRowText(index, row, oldItem, names, signals, true);
+        }
+        // Then repaint the four rows for the new viewport.
         for (uint8_t row = 0; row < visible; ++row) {
           uint8_t index = newFirst + row;
           if (index >= count) break;
@@ -812,6 +849,69 @@ class DisplayManager {
       tft.drawString("UP/DOWN - SELECT  ENTER - CHOOSE", 160, 225, 2);
     }
 
+    void drawWifiPasswordKey(uint8_t i, uint8_t selectedKey,
+                             bool symbolsPage, bool uppercase) {
+      const uint8_t cols = 9;
+      const int cellW = 34;
+      const int cellH = 17;
+      const int x0 = 7;
+      const int y0 = 115;
+      uint8_t row = i / cols;
+      uint8_t col = i % cols;
+      int x = x0 + col * cellW;
+      int y = y0 + row * cellH;
+      bool selected = (i == selectedKey);
+      uint16_t bg = selected ? COLOR_HEADER : COLOR_PANEL;
+      uint16_t fg = selected ? COLOR_HEADER_TEXT : COLOR_TEXT;
+      tft.fillRoundRect(x, y, 32, 15, 3, bg);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(fg, bg);
+
+      String key;
+      if ((symbolsPage && i < 32) || (!symbolsPage && i < 36)) {
+        if (symbolsPage) {
+          const char symbols[] = "!@#$%^&*()-_=+[]{};:,.?/\\|<>~`\"'";
+          key = String(symbols[i]);
+        } else if (i < 26) {
+          key = String(char((uppercase ? 'A' : 'a') + i));
+        } else {
+          key = String(char('0' + i - 26));
+        }
+      } else {
+        const char* labels[] = {"SHFT", "?123", "SPACE", "DEL", "DONE"};
+        key = labels[i - 32];
+      }
+      tft.drawString(key, x + 16, y + 8, 2);
+    }
+
+    void updateWifiPasswordInput(const String& maskedPassword,
+                                 uint8_t oldSelectedKey, uint8_t newSelectedKey,
+                                 bool symbolsPage, bool uppercase,
+                                 bool redrawAllKeys, bool passwordChanged) {
+      if (!displayReady) return;
+
+      if (passwordChanged) {
+        tft.fillRect(88, 72, 222, 24, COLOR_BG);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(COLOR_TEXT, COLOR_BG);
+        String shownPassword = maskedPassword;
+        if (shownPassword.length() > 28)
+          shownPassword = shownPassword.substring(shownPassword.length() - 28);
+        tft.drawString(shownPassword, 90, 84, 2);
+      }
+
+      if (redrawAllKeys) {
+        tft.fillRect(5, 112, 310, 88, COLOR_BG);
+        for (uint8_t key = 0; key < 37; ++key)
+          drawWifiPasswordKey(key, newSelectedKey, symbolsPage, uppercase);
+      } else {
+        if (oldSelectedKey < 37)
+          drawWifiPasswordKey(oldSelectedKey, newSelectedKey, symbolsPage, uppercase);
+        if (newSelectedKey < 37 && newSelectedKey != oldSelectedKey)
+          drawWifiPasswordKey(newSelectedKey, newSelectedKey, symbolsPage, uppercase);
+      }
+    }
+
     void drawWifiPassword(const String& ssid, const String& maskedPassword,
                           uint8_t selectedKey, bool symbolsPage, bool uppercase,
                           bool connecting, bool connected, bool failed) {
@@ -838,7 +938,7 @@ class DisplayManager {
       tft.drawString(shownPassword, 90, 84, 2);
 
       if (connecting || connected || failed) {
-        tft.fillRoundRect(18, 119, 284, 76, COLOR_PANEL, 6);
+        tft.fillRoundRect(18, 119, 284, 76, 6, COLOR_PANEL);
         tft.setTextDatum(MC_DATUM);
         if (connecting) {
           tft.setTextColor(COLOR_MUTED, COLOR_BG);
@@ -855,38 +955,12 @@ class DisplayManager {
         tft.setTextColor(COLOR_MUTED, COLOR_BG);
         tft.drawString(symbolsPage ? "Symbols" : (uppercase ? "ABC" : "abc"), 10, 105, 2);
 
-        const uint8_t cols = 9;
-        const int cellW = 34;
-        const int cellH = 17;
-        const int x0 = 7;
-        const int y0 = 115;
         for (uint8_t i = 0; i < 37; ++i) {
-          uint8_t row = i / cols;
-          uint8_t col = i % cols;
-          int x = x0 + col * cellW;
-          int y = y0 + row * cellH;
-          bool selected = (i == selectedKey);
-          uint16_t bg = selected ? COLOR_HEADER : COLOR_PANEL;
-          uint16_t fg = selected ? COLOR_HEADER_TEXT : COLOR_TEXT;
-          tft.fillRoundRect(x, y, 32, 15, 3, bg);
-          tft.setTextDatum(MC_DATUM);
-          tft.setTextColor(fg, bg);
-          String key;
-          if ((symbolsPage && i < 32) || (!symbolsPage && i < 36)) {
-            if (symbolsPage) {
-              const char symbols[] = "!@#$%^&*()-_=+[]{};:,.?/\\|<>~`\"'";
-              key = String(symbols[i]);
-            } else if (i < 26) {
-              key = String(char((uppercase ? 'A' : 'a') + i));
-            } else {
-              key = String(char('0' + i - 26));
-            }
-          } else {
-            const char* labels[] = {"SHFT", "?123", "SPACE", "DEL", "DONE"};
-            key = labels[i - 32];
-          }
-          tft.drawString(key, x + 16, y + 8, 2);
+          drawWifiPasswordKey(i, selectedKey, symbolsPage, uppercase);
         }
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(COLOR_MUTED, COLOR_BG);
+        tft.drawString("UP/DOWN: MOVE   ENTER: SELECT", 160, 205, 2);
         tft.setTextDatum(MC_DATUM);
         tft.setTextColor(COLOR_MUTED, COLOR_BG);
         tft.drawString("UP/DOWN: MOVE   ENTER: SELECT", 160, 205, 2);
