@@ -48,11 +48,6 @@ public:
   HeliumData update() {
     data.voltageValid = false;
 
-    if (!adc->isReady()) {
-      data.sensorReady = false;
-      return data;
-    }
-
     data.sensorReady = true;
 
     float voltage = readVoltage();

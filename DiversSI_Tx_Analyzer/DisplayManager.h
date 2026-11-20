@@ -398,7 +398,9 @@ class DisplayManager {
 
       const char* items[] = {
         "Display settings",
-        "System settings"
+        "System settings",
+        "Reset calibration",
+        "Factory reset"
       };
 
       tft.fillRect(0, 0, DISPLAY_WIDTH, 42, COLOR_HEADER);
@@ -408,8 +410,8 @@ class DisplayManager {
       tft.setTextColor(COLOR_HEADER_TEXT, COLOR_HEADER);
       tft.drawString("SETTINGS", 160, 21, 4);
 
-      for (uint8_t i = 0; i < 2; i++) {
-        int y = 65 + i * 45;
+      for (uint8_t i = 0; i < 4; i++) {
+        int y = 48 + i * 39;
 
         uint16_t bg = (i == selectedItem) ? COLOR_HEADER : COLOR_PANEL;
 
@@ -469,16 +471,36 @@ class DisplayManager {
       if (!displayReady || oldItem == newItem) return;
 
       const char* items[] = {
-        "Display settings", "System settings"
+        "Display settings", "System settings", "Reset calibration", "Factory reset"
       };
 
       tft.setTextDatum(ML_DATUM);
 
       tft.setTextColor(COLOR_TEXT, COLOR_BG);
-      tft.drawString(items[oldItem], 30, 65 + oldItem * 45 + 18, 4);
+      tft.drawString(items[oldItem], 30, 48 + oldItem * 39 + 18, 4);
 
       tft.setTextColor(COLOR_HEADER_TEXT, COLOR_HEADER);
-      tft.drawString(items[newItem], 30, 65 + newItem * 45 + 18, 4);
+      tft.drawString(items[newItem], 30, 48 + newItem * 39 + 18, 4);
+    }
+
+    void drawResetConfirmation(const char* title, const char* message1,
+                               const char* message2) {
+      if (!displayReady) return;
+      tft.fillScreen(COLOR_BG);
+      tft.fillRect(0, 0, DISPLAY_WIDTH, 42, COLOR_HEADER);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextColor(COLOR_HEADER_TEXT, COLOR_HEADER);
+      tft.drawString(title, 160, 21, 4);
+
+      tft.setTextColor(COLOR_TEXT, COLOR_BG);
+      tft.drawString(message1, 160, 91, 2);
+      tft.drawString(message2, 160, 119, 2);
+      tft.setTextColor(COLOR_ERROR, COLOR_BG);
+      tft.drawString("Are you sure?", 160, 160, 4);
+
+      tft.fillRect(0, 211, DISPLAY_WIDTH, 29, COLOR_HEADER);
+      tft.setTextColor(COLOR_HEADER_TEXT, COLOR_HEADER);
+      tft.drawString("ENTER: CONFIRM   LONG ENTER: CANCEL", 160, 225, 2);
     }
 
 
@@ -1081,6 +1103,28 @@ class DisplayManager {
       tft.setTextColor(voltageValid ? COLOR_TEXT : COLOR_ERROR, COLOR_BG);
       tft.drawString(voltageValid ? String(voltage_mV, 3) + " mV" : "-- mV", 292, y, 2);
     }
+    
+    void updateSensorStatusLine(const char* sensorName, bool sensorReady) {
+        if (!displayReady) return;
+
+        int y;
+
+        if (strcmp(sensorName, "ADS1115") == 0) {
+            y = 65;
+        } else if (strcmp(sensorName, "O2") == 0) {
+            y = 105;
+        } else if (strcmp(sensorName, "He") == 0) {
+            y = 160;
+        } else {
+            return;
+        }
+
+        tft.fillRect(230, y - 10, 70, 20, COLOR_BG);
+
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(sensorReady ? COLOR_OK : COLOR_ERROR, COLOR_BG);
+        tft.drawString(sensorReady ? "READY" : "ERROR", 300, y, 2);
+    }
 
     void drawAbout() {
       if (!displayReady) return;
@@ -1136,6 +1180,11 @@ class DisplayManager {
       } else {
         tft.drawString(String(value, 1) + " %", 238, 120, 4);
       }
+    }
+
+    void updateADSStatus(bool adcReady) {
+        if (!displayReady) return;
+        drawStatus(adcReady);
     }
 
 };

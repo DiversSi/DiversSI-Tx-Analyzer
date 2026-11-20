@@ -11,6 +11,8 @@ enum AppScreen {
   SCREEN_SETTINGS_MENU,
   SCREEN_DISPLAY_SETTINGS,
   SCREEN_SYSTEM_SETTINGS,
+  SCREEN_RESET_CALIBRATION_CONFIRM,
+  SCREEN_FACTORY_RESET_CONFIRM,
   SCREEN_WIFI_NETWORKS,
   SCREEN_WIFI_PASSWORD,
   SCREEN_FIRMWARE_UPDATE,
@@ -63,7 +65,9 @@ public:
         changeScreen(SCREEN_MAIN);
       } else if (currentScreen == SCREEN_WIFI_NETWORKS || currentScreen == SCREEN_WIFI_PASSWORD) {
         changeScreen(SCREEN_SYSTEM_SETTINGS);
-      } else if (currentScreen == SCREEN_DISPLAY_SETTINGS ||
+      } else if (currentScreen == SCREEN_RESET_CALIBRATION_CONFIRM ||
+                 currentScreen == SCREEN_FACTORY_RESET_CONFIRM ||
+                 currentScreen == SCREEN_DISPLAY_SETTINGS ||
                  currentScreen == SCREEN_SYSTEM_SETTINGS) {
         // Display and System Settings are child screens of the Settings menu.
         changeScreen(SCREEN_SETTINGS_MENU);
@@ -96,7 +100,7 @@ public:
         itemCount = 4;
         break;
       case SCREEN_SETTINGS_MENU:
-        itemCount = 2;
+        itemCount = 4;
         break;
       case SCREEN_DISPLAY_SETTINGS:
         itemCount = 6;
@@ -139,6 +143,8 @@ public:
     } else if (event.button == BTN_ENTER && currentScreen == SCREEN_SETTINGS_MENU) {
       if (selectedItem == 0) changeScreen(SCREEN_DISPLAY_SETTINGS);
       else if (selectedItem == 1) changeScreen(SCREEN_SYSTEM_SETTINGS);
+      else if (selectedItem == 2) changeScreen(SCREEN_RESET_CALIBRATION_CONFIRM);
+      else if (selectedItem == 3) changeScreen(SCREEN_FACTORY_RESET_CONFIRM);
     } else if (event.button == BTN_ENTER && currentScreen == SCREEN_SYSTEM_SETTINGS) {
       if (selectedItem == 1) changeScreen(SCREEN_FIRMWARE_UPDATE);
     } else if (event.button == BTN_ENTER && currentScreen == SCREEN_WIFI_NETWORKS) {
@@ -148,6 +154,7 @@ public:
 
   void openWifiNetworks() { changeScreen(SCREEN_WIFI_NETWORKS); }
   void returnToSystemSettings() { changeScreen(SCREEN_SYSTEM_SETTINGS); }
+  void returnToSettingsMenu() { changeScreen(SCREEN_SETTINGS_MENU); }
 
   void openWifiPassword() {
     changeScreen(SCREEN_WIFI_PASSWORD);

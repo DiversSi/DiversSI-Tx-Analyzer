@@ -157,10 +157,30 @@ public:
     return true;
   }
 
-  bool clear() {
+  bool clearCalibration() {
     if (!initialized) return false;
-
+    if (preferences.getBytesLength(KEY_CALIBRATION) == 0) return true;
     return preferences.remove(KEY_CALIBRATION);
+  }
+
+  bool clearDisplaySettings() {
+    if (!initialized) return false;
+    if (preferences.getBytesLength(KEY_DISPLAY) == 0) return true;
+    return preferences.remove(KEY_DISPLAY);
+  }
+
+  // Factory reset clears this application's calibration and display settings.
+  // Wi-Fi credentials are stored by WifiManager in a separate NVS namespace.
+  bool factoryReset() {
+    if (!initialized) return false;
+    bool calibrationOk = clearCalibration();
+    bool displayOk = clearDisplaySettings();
+    return calibrationOk && displayOk;
+  }
+
+  // Backward-compatible alias for calibration reset.
+  bool clear() {
+    return clearCalibration();
   }
 
   void end() {

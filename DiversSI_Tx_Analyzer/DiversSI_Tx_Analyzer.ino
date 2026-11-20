@@ -767,6 +767,51 @@ void loop() {
       continue;
     }
 
+    // Destructive actions require an explicit confirmation on their own screen.
+    if ((screenBeforeEvent == SCREEN_RESET_CALIBRATION_CONFIRM ||
+         screenBeforeEvent == SCREEN_FACTORY_RESET_CONFIRM) &&
+        event.type == BTN_EVENT_SHORT && event.button == BTN_ENTER) {
+      CalibrationData emptyCalibration = {};
+      bool resetOk = false;
+
+      if (screenBeforeEvent == SCREEN_RESET_CALIBRATION_CONFIRM) {
+        resetOk = storage.clearCalibration();
+      } else {
+        resetOk = storage.factoryReset();
+        if (resetOk) {
+          // Restore the application's default display preferences in RAM.
+          displaySettings.brightness = 100;
+          displaySettings.theme = 0;
+          displaySettings.dimTimeout = 1;
+          Storage::setDefaultPalette(displaySettings);
+          display.setTheme(false, 0, 0, 0);
+          display.setBrightness(100);
+        }
+      }
+
+      if (resetOk) {
+        calibration.setData(emptyCalibration);
+        oxygenFilter.reset();
+        heliumFilter.reset();
+        o2AirCalibratedThisBoot = false;
+        o2AirCalibrationTime_ms = 0;
+        heZeroCalibratedThisBoot = false;
+        heZeroCalibrationTime_ms = 0;
+        o2CalibrationState = O2_CAL_IDLE;
+        heCalibrationState = HE_CAL_IDLE;
+        latestFilteredO2 = NAN;
+        latestFilteredHePercent = NAN;
+        Serial.println(screenBeforeEvent == SCREEN_RESET_CALIBRATION_CONFIRM
+                         ? "Calibration reset: OK"
+                         : "Factory reset: OK (Wi-Fi credentials preserved)");
+      } else {
+        Serial.println("Reset failed: storage error");
+      }
+
+      menu.returnToSettingsMenu();
+      continue;
+    }
+
     if (screenBeforeEvent == SCREEN_SYSTEM_SETTINGS &&
         event.type == BTN_EVENT_SHORT && event.button == BTN_ENTER &&
         menu.getSelectedItem() == 0) {
@@ -918,34 +963,59 @@ void loop() {
 
     lastSensorUpdate_ms = now;
 
-    OxygenData o2 = oxygen.update();
-    HeliumData he = helium.update();
+    bool adcReady = adc.isReady();
 
-    if (o2.measurementValid) {
-      latestFilteredO2 = oxygenFilter.update(o2.oxygenPercent);
-    } else {
+    // Najprej osvežimo status
+    if (menu.getScreen() == SCREEN_MAIN) {
+        display.updateADSStatus(adcReady);
+    }
+    
+    if (adcReady) {
+      OxygenData o2 = oxygen.update();
+      HeliumData he = helium.update();
+    
+      if (o2.measurementValid) {
+        latestFilteredO2 = oxygenFilter.update(o2.oxygenPercent);
+      } else {
+        latestFilteredO2 = NAN;
+      }
+
+      if (he.voltageValid) {
+        float filteredHeVoltage = heliumFilter.update(he.voltage_mV);
+        latestFilteredHePercent = helium.calculateHelium(filteredHeVoltage);
+      } else {
+        latestFilteredHePercent = NAN;
+      }
+
+      // Keep raw sensor voltages visible and refreshed on the Sensor Status screen.
+      if (menu.getScreen() == SCREEN_SENSOR_STATUS) {
+        display.updateSensorStatusLine("ADS1115", true);
+        display.updateSensorStatusLine("O2", true);
+        display.updateSensorStatusLine("He", true);
+
+        display.updateSensorVoltageLine("O2", o2.voltage_mV,
+                                        isfinite(o2.voltage_mV), 126);
+        display.updateSensorVoltageLine("He", he.voltage_mV,
+                                        isfinite(he.voltage_mV), 181);
+      }
+    } 
+    else{
       latestFilteredO2 = NAN;
-    }
-
-    if (he.voltageValid) {
-      float filteredHeVoltage = heliumFilter.update(he.voltage_mV);
-      latestFilteredHePercent = helium.calculateHelium(filteredHeVoltage);
-    } else {
       latestFilteredHePercent = NAN;
-    }
 
+      if (menu.getScreen() == SCREEN_SENSOR_STATUS) {
+          display.updateSensorStatusLine("ADS1115", false);
+          display.updateSensorStatusLine("O2", false);
+          display.updateSensorStatusLine("He", false);
+
+          display.updateSensorVoltageLine("O2", NAN, false, 126);
+          display.updateSensorVoltageLine("He", NAN, false, 181);
+      }
+    }
     // Update live gas values only when the main screen is visible.
     if (menu.getScreen() == SCREEN_MAIN) {
       display.updateOxygen(latestFilteredO2);
       display.updateHelium(latestFilteredHePercent);
-    }
-
-    // Keep raw sensor voltages visible and refreshed on the Sensor Status screen.
-    if (menu.getScreen() == SCREEN_SENSOR_STATUS) {
-      display.updateSensorVoltageLine("O2", o2.voltage_mV,
-                                      isfinite(o2.voltage_mV), 126);
-      display.updateSensorVoltageLine("He", he.voltage_mV,
-                                      isfinite(he.voltage_mV), 181);
     }
   }
 
@@ -981,6 +1051,18 @@ void loop() {
 
       case SCREEN_SYSTEM_SETTINGS:
         display.drawSystemSettingsMenu(menu.getSelectedItem(), wifiManager.isEnabled(), wifiManager.isConnected(), wifiManager.isBusy());
+        break;
+
+      case SCREEN_RESET_CALIBRATION_CONFIRM:
+        display.drawResetConfirmation("RESET CALIBRATION?",
+          "O2 and He calibration will be erased.",
+          "Display and Wi-Fi settings are kept.");
+        break;
+
+      case SCREEN_FACTORY_RESET_CONFIRM:
+        display.drawResetConfirmation("FACTORY RESET?",
+          "Calibration and display settings reset.",
+          "Wi-Fi network and password are kept.");
         break;
 
       case SCREEN_WIFI_NETWORKS:

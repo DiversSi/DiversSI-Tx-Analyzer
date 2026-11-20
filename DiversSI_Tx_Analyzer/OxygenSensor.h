@@ -48,11 +48,6 @@ public:
   OxygenData update() {
     data.measurementValid = false;
 
-    if (!adc->isReady()) {
-      data.sensorReady = false;
-      return data;
-    }
-
     data.sensorReady = true;
 
     float voltage = readVoltage();

@@ -100,11 +100,15 @@ public:
   bool setHeliumZero(float voltage_mV) {
     if (!isfinite(voltage_mV))
       return false;
+    
+    float old_U0 = getHeliumU0_mV();
+    float old_U100 = getHeliumU100_mV();
+    float difference = voltage_mV - old_U0;
 
     data.heZeroVoltage_mV = voltage_mV;
-    data.heZeroCalibrated = true;
+    data.hePureVoltage_mV = old_U100 + difference;
 
-    data.hePureVoltage_mV = 0.0f;
+    data.heZeroCalibrated = true;    
     data.hePureCalibrated = false;
 
     return true;
@@ -142,7 +146,7 @@ public:
   }
 
   float getHeliumU100_mV() const {
-    return data.hePureCalibrated ? data.hePureVoltage_mV : HE_DEFAULT_U100_MV;
+    return data.heZeroCalibrated ? data.hePureVoltage_mV : HE_DEFAULT_U100_MV;
   }
 
   CalibrationData getData() const {
